@@ -42,6 +42,17 @@ class kamailio:
         match = re.match(r'sip:([^@]+)@', uri)
         if match: return match.group(1)
         return None
+    
+    def initialize_user_profile(self, username):
+        """Initialize user profile with automatically active redial service"""
+        if username not in user_redial_lists:
+            user_redial_lists[username] = {
+                "user": username,
+                "status": "active",  # Automatically active on registration
+                "redial_list": []    # Empty list initially
+            }
+            # Update statistics for new user
+            KSR.info(f"=== User {username} registered with automatic active redial service\n")
 
     def ksr_request_route(self, msg):
         if (msg.Method == "REGISTER"):
