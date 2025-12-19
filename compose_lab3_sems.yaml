@@ -6,8 +6,7 @@ services:
       sipnet:
         aliases:        
           - sipnet.kamailio  # DNS name and a server for both:
-          - sipnet.a    #  sipnet.a, and 
-          - sipnet.b    #  sipnet.b
+          - acme.operator    #  acme.operator, and 
     environment:
       - SIP_DOMAIN=sipnet.kamailio
       - WITH_DB=no
@@ -23,7 +22,7 @@ services:
       - sipnet
     hostname: sipnet.alice
     environment:
-      - DISPLAY=${DISPLAY} # Pass the host's DISPLAY variable
+      - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
     volumes:
       - ./scripts/Alice.cfg:/tmp/twinkle/Alice.cfg:ro
@@ -31,8 +30,6 @@ services:
       - ./scripts_aux/.asoundrc:/root/.asoundrc:ro
       - ./scripts_aux/start.sh:/root/start.sh:ro
       - twinkle-alice:/root/.twinkle
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw # Mount the X11 socket
-      - ~/.Xauthority:/root/.Xauthority:rw # Mount the X11 authentication file
     restart: unless-stopped
 
   terminal_bob:
@@ -42,7 +39,7 @@ services:
       - sipnet
     hostname: sipnet.bob
     environment:
-      - DISPLAY=${DISPLAY} # Pass the host's DISPLAY variable
+      - DISPLAY=host.docker.internal:0
     entrypoint: ["sh", "/root/start.sh"]
     volumes:
       - ./scripts/Bob.cfg:/tmp/twinkle/Bob.cfg:ro
@@ -50,9 +47,6 @@ services:
       - ./scripts_aux/.asoundrc:/root/.asoundrc:ro
       - ./scripts_aux/start.sh:/root/start.sh:ro
       - twinkle-bob:/root/.twinkle
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw # Mount the X11 socket
-      - ~/.Xauthority:/root/.Xauthority:rw # Mount the X11 authentication file
-   
     restart: unless-stopped
 
 networks:

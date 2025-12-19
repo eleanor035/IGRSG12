@@ -23,7 +23,7 @@ class kamailio:
     def is_acme_user(self, uri):  
         if not uri:
             return False
-        return "acme.operador" in uri
+        return "acme.operator" in uri
 
     # Helper function to extract username from URI
     def extract_username(self, uri):  
@@ -74,12 +74,12 @@ class kamailio:
                 KSR.tm.t_relay()   
                 return 1                
 
-            if (KSR.pv.get("$td") != "sipnet.a"):       
+            if (KSR.pv.get("$td") != "acme.operator"):       
                 KSR.tm.t_relay()   
                 KSR.rr.record_route()  
                 return 1
 
-            if (KSR.pv.get("$td") == "sipnet.a"):             
+            if (KSR.pv.get("$td") == "acme.operator"):             
                 if (KSR.registrar.lookup("location") == 1):   
                     KSR.tm.t_relay()   
                     KSR.rr.record_route()  
