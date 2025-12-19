@@ -23,7 +23,7 @@ class kamailio:
     def is_acme_user(self, uri):  
         if not uri:
             return False
-        return "acme.operador" in uri
+        return "acme.operator" in uri
 
     # Helper function to extract username from URI
     def extract_username(self, uri):  
@@ -34,30 +34,40 @@ class kamailio:
         if match:
             return match.group(1)
         return None
+    
+    def initialize_user_profile(self, username):
+        """Initialize user profile with automatically active redial service"""
+        if username not in user_redial_lists:
+            user_redial_lists[username] = {
+                "user": username,
+                "status": "active",  # Automatically active on registration
+                "redial_list": []    # Empty list initially
+            }
+            # Update statistics for new user
+            KSR.info(f"=== User {username} registered with automatic active redial service\n")
 
     # Function called for REQUEST messages received 
     def ksr_request_route(self, msg):
         # Working as a Registrar server
         if (msg.Method == "REGISTER"):
             from_uri = KSR.pv.get("$fu")
-            
-            # Check if user belongs to acme.operador domain
-            if not self.is_acme_user(from_uri):  
+            if not self.is_acme_user(from_uri):
                 KSR.sl.send_reply(403, "Forbidden - Not an ACME user")
                 return 1
-                
-            KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")      
-            KSR.info("            To: " + KSR.pv.get("$tu") +
-                           " Contact: " + KSR.hdr.get("Contact") +"\n")  
-            
-            username = self.extract_username(from_uri)  
+            KSR.info("REGISTER R-URI: " + KSR.pv.get("$ru") + "\n")
+            username = self.extract_username(from_uri)
             if username:
-                # Initialize user data if not exists
-                if username not in user_redial_lists:
-                    user_redial_lists[username] = []
-                    KSR.info(f"Initialized redial service for user {username}\n")
+                # Initialize user profile with automatic active redial service
+                self.initialize_user_profile(username)
+                
+                # Explicitly activate redial service for this user
+                if username in user_redial_lists:
+                    user_redial_lists[username]["status"] = "active"
+                    KSR.info(f"=== Redial service automatically activated for user {username}\n")
             
-            KSR.registrar.save('location', 0)                            
+            # Debug: Log the registration
+            KSR.info(f"=== Registering user {username} from {KSR.pv.get('$fu')}\n")
+            KSR.registrar.save('location', 0)
             return 1
 
         # Working as a Redirect server
@@ -74,12 +84,12 @@ class kamailio:
                 KSR.tm.t_relay()   
                 return 1                
 
-            if (KSR.pv.get("$td") != "sipnet.a"):       
+            if (KSR.pv.get("$td") != "acme.operator"):       
                 KSR.tm.t_relay()   
                 KSR.rr.record_route()  
                 return 1
 
-            if (KSR.pv.get("$td") == "sipnet.a"):             
+            if (KSR.pv.get("$td") == "acme.operator"):             
                 if (KSR.registrar.lookup("location") == 1):   
                     KSR.tm.t_relay()   
                     KSR.rr.record_route()  
