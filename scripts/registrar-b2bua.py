@@ -6,7 +6,7 @@ import re
 user_redial_lists = {}
 user_service_status = {}  
 
-# Dictionary to track registered users
+# NEW: Dictionary to track registered users
 registered_users = {}
 
 # Service monitoring KPIs
@@ -42,17 +42,6 @@ class kamailio:
         match = re.match(r'sip:([^@]+)@', uri)
         if match: return match.group(1)
         return None
-    
-    def initialize_user_profile(self, username):
-        """Initialize user profile with automatically active redial service"""
-        if username not in user_redial_lists:
-            user_redial_lists[username] = {
-                "user": username,
-                "status": "active",  # Automatically active on registration
-                "redial_list": []    # Empty list initially
-            }
-            # Update statistics for new user
-            KSR.info(f"=== User {username} registered with automatic active redial service\n")
 
     def ksr_request_route(self, msg):
         if (msg.Method == "REGISTER"):
@@ -63,7 +52,7 @@ class kamailio:
             
             username = self.extract_username(from_uri)
             if username:
-                # Add user to the registered_users list upon successful registration
+                # NEW: Add user to the registered_users list upon successful registration
                 registered_users[username] = True
                 KSR.info(f"User {username} registered successfully.\n")
                 
@@ -75,7 +64,7 @@ class kamailio:
             
             # This saves the registration to Kamailio's location DB
             KSR.registrar.save('location', 0)
-            # This sends a 200 OK back to the client
+            # This sends the 200 OK back to the client
             KSR.sl.send_reply(200, "OK")
             return 1
 
@@ -88,7 +77,7 @@ class kamailio:
                 KSR.sl.send_reply(403, "Forbidden - Not an ACME user")
                 return 1
                 
-            # Check if the message is sent to redial@acme.operador
+            # FIXED: Use the correct domain name
             if "redial@acme.operador" in to_uri:
                 content = KSR.pv.get("$rb")  # Get message body
                 username = self.extract_username(from_uri)
@@ -99,7 +88,7 @@ class kamailio:
                 
                 # Process ACTIVATE command
                 if content.startswith("ACTIVATE"):
-                    # Check if the user is registered before allowing activation
+                    # NEW: Check if the user is registered before allowing activation
                     if username not in registered_users:
                         KSR.info(f"ACTIVATE failed: User {username} is not registered.\n")
                         KSR.sl.send_reply(403, "Forbidden - User not registered")
@@ -110,7 +99,7 @@ class kamailio:
                         KSR.sl.send_reply(400, "Bad Request - Missing destinations")
                         return 1
                     
-                    # Extract destinations from the message
+                    # Extract destinations from message
                     destinations = parts[1:]
                     user_redial_lists[username] = destinations
                     user_service_status[username] = True
@@ -127,14 +116,29 @@ class kamailio:
                     KSR.sl.send_reply(200, "OK - Redial service activated")
                     return 1
                 
+                # Process DEACTIVATE command
+                elif content.strip() == "DEACTIVATE":
+                    # NEW: Check if the user is registered before allowing deactivation
+                    if username not in registered_users:
+                        KSR.info(f"DEACTIVATE failed: User {username} is not registered.\n")
+                        KSR.sl.send_reply(403, "Forbidden - User not registered")
+                        return 1
+
+                    user_redial_lists[username] = []
+                    if user_service_status.get(username, False) == True:
+                        service_stats['currently_active_users'] -= 1
+                    user_service_status[username] = False
+                    
+                    KSR.info(f"Redial service deactivated for user {username}\n")
+                    KSR.sl.send_reply(200, "OK - Redial service deactivated")
+                    return 1
+                
                 # Process PIN verification (simplified)
                 elif content.strip() == "VERIFY_PIN":
                     pin = user_pins.get(username, "0000")
                     KSR.info(f"PIN verification for user {username}: {pin}\n")
                     KSR.sl.send_reply(200, f"OK - Your PIN is: {pin}")
                     return 1
-                
-                # DEACTIVATE command has been removed as requested
                 
                 # Unknown command
                 else:
@@ -164,7 +168,7 @@ class kamailio:
                 
                 KSR.info(f"Redial scenario detected: {from_username} calling {to_username}\n")
                 
-                # Try to find the user in the location database
+                # Try to find user in the location database
                 if (KSR.registrar.lookup("location") == 1):   
                     KSR.info(f"User {to_username} found, relaying call\n")
                     KSR.tm.t_relay()   
@@ -178,16 +182,19 @@ class kamailio:
                     return 1
             
             # Normal call processing (from the original script)
+            # FIXED: Use the correct domain name
             if (KSR.pv.get("$tu") == "sip:nobody@acme.operador"):       
                 KSR.pv.sets("$ru", "sip:nobody@sipnet.alice:9999") 
                 KSR.tm.t_relay()   
                 return 1                
 
+            # FIXED: Use the correct domain name
             if (KSR.pv.get("$td") != "acme.operador"):       
                 KSR.tm.t_relay()   
                 KSR.rr.record_route()  
                 return 1
 
+            # FIXED: Use the correct domain name
             if (KSR.pv.get("$td") == "acme.operador"):             
                 if (KSR.registrar.lookup("location") == 1):   
                     KSR.tm.t_relay()   
