@@ -35,7 +35,7 @@ class kamailio:
     # FIXED: Use the correct domain name everywhere
     def is_acme_user(self, uri):
         if not uri: return False
-        return "acme.operador" in uri  
+        return "acme.operator" in uri  
 
     def extract_username(self, uri):
         if not uri: return None
@@ -78,7 +78,7 @@ class kamailio:
                 return 1
                 
             # FIXED: Use the correct domain name
-            if "redial@acme.operador" in to_uri:
+            if "redial@acme.operator" in to_uri:
                 content = KSR.pv.get("$rb")  # Get message body
                 username = self.extract_username(from_uri)
                 
@@ -183,19 +183,19 @@ class kamailio:
             
             # Normal call processing (from the original script)
             # FIXED: Use the correct domain name
-            if (KSR.pv.get("$tu") == "sip:nobody@acme.operador"):       
+            if (KSR.pv.get("$tu") == "sip:nobody@acme.operaor"):       
                 KSR.pv.sets("$ru", "sip:nobody@sipnet.alice:9999") 
                 KSR.tm.t_relay()   
                 return 1                
 
             # FIXED: Use the correct domain name
-            if (KSR.pv.get("$td") != "acme.operador"):       
+            if (KSR.pv.get("$td") != "acme.operator"):       
                 KSR.tm.t_relay()   
                 KSR.rr.record_route()  
                 return 1
 
             # FIXED: Use the correct domain name
-            if (KSR.pv.get("$td") == "acme.operador"):             
+            if (KSR.pv.get("$td") == "acme.operator"):             
                 if (KSR.registrar.lookup("location") == 1):   
                     KSR.tm.t_relay()   
                     KSR.rr.record_route()  
