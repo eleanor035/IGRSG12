@@ -10,7 +10,7 @@ services:
           - sipnet.b    #  sipnet.b
     environment:
       - SIP_DOMAIN=sipnet.kamailio
-      - WITH_DB=no
+      - WITH_DB=yes
     volumes:
       - ./scripts_aux/app.cfg:/etc/kamailio/kamailio.cfg:ro
       - ./scripts/registrar-b2bua.py:/etc/kamailio/app.py:ro
