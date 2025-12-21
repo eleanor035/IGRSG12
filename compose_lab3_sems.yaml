@@ -8,11 +8,13 @@ services:
           - sipnet.kamailio  # DNS name and a server for both:
           - acme.operator    #  acme.operator, and 
     environment:
-      - SIP_DOMAIN=sipnet.kamailio
+      - SIP_DOMAIN=acme.operator
       - WITH_DB=no
     volumes:
       - ./scripts_aux/app.cfg:/etc/kamailio/kamailio.cfg:ro
       - ./scripts/registrar-b2bua.py:/etc/kamailio/app.py:ro
+      # Add volume for persistent htable data
+      - kamailio_data:/var/kamailio/db
     restart: unless-stopped
 
   terminal_alice:
@@ -22,7 +24,7 @@ services:
       - sipnet
     hostname: sipnet.alice
     environment:
-      - DISPLAY=host.docker.internal:0
+      - DISPLAY=${DISPLAY}
     entrypoint: ["sh", "/root/start.sh"]
     volumes:
       - ./scripts/Alice.cfg:/tmp/twinkle/Alice.cfg:ro
@@ -30,6 +32,8 @@ services:
       - ./scripts_aux/.asoundrc:/root/.asoundrc:ro
       - ./scripts_aux/start.sh:/root/start.sh:ro
       - twinkle-alice:/root/.twinkle
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ~/.Xauthority:/root/.Xauthority:rw
     restart: unless-stopped
 
   terminal_bob:
@@ -39,7 +43,7 @@ services:
       - sipnet
     hostname: sipnet.bob
     environment:
-      - DISPLAY=host.docker.internal:0
+      - DISPLAY=${DISPLAY}
     entrypoint: ["sh", "/root/start.sh"]
     volumes:
       - ./scripts/Bob.cfg:/tmp/twinkle/Bob.cfg:ro
@@ -47,6 +51,27 @@ services:
       - ./scripts_aux/.asoundrc:/root/.asoundrc:ro
       - ./scripts_aux/start.sh:/root/start.sh:ro
       - twinkle-bob:/root/.twinkle
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ~/.Xauthority:/root/.Xauthority:rw
+    restart: unless-stopped
+
+  terminal_john:
+    image: twinkle:igrs_01
+    container_name: twinkle_john
+    networks:
+      - sipnet
+    hostname: sipnet.john
+    environment:
+      - DISPLAY=${DISPLAY}
+    entrypoint: ["sh", "/root/start.sh"]
+    volumes:
+      - ./scripts/John.cfg:/tmp/twinkle/John.cfg:ro
+      - ./scripts/twinkle_john.sys:/tmp/twinkle/twinkle.sys:ro
+      - ./scripts_aux/.asoundrc:/root/.asoundrc:ro
+      - ./scripts_aux/start.sh:/root/start.sh:ro
+      - twinkle-john:/root/.twinkle
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ~/.Xauthority:/root/.Xauthority:rw
     restart: unless-stopped
 
 networks:
@@ -56,3 +81,5 @@ networks:
 volumes:
   twinkle-alice:
   twinkle-bob:
+  twinkle-john:
+  kamailio_data:  # Add volume for persistent data
