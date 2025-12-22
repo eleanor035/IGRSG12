@@ -7,6 +7,8 @@ services:
         aliases:        
           - sipnet.kamailio  # DNS name and a server for both:
           - acme.operator    #  acme.operator, and 
+          - sipnet.a 
+          - sipnet.b
     environment:
       - SIP_DOMAIN=acme.operator
       - WITH_DB=no
