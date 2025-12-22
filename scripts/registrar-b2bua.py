@@ -1,20 +1,29 @@
 import sys
 import KSR as KSR
 import re
+import json
+
+# =================================================================
+# CONFIGURATION
+# =================================================================
+CONFIG = {
+    "SERVICE_DOMAIN": "acme.operator",
+    "SERVICE_MANAGEMENT_URI": "redial@acme.operator",
+    "PIN_VALIDATION_URI": "validar@acme.pt",
+    "MAX_REDIAL_ATTEMPTS": 3,
+    "H_TABLE_NAME": "redial"
+}
+# =================================================================
 
 # Service monitoring KPIs (stored in htable)
 SERVICE_STATS_KEYS = ['total_activations', 'currently_active_users', 'max_redial_list_size']
 
-# Mandatory function - module initiation
 def mod_init():
     KSR.info("===== Redial 2.0 Service - Python mod init (using htable)\n")
-    # Initialize service stats in htable if they don't exist
     for key in SERVICE_STATS_KEYS:
-        # Use sht_is_null() to check if a key exists. It returns -1 if not found.
-        if KSR.htable.sht_is_null("redial", key) == -1:
-            KSR.htable.sht_sets("redial", key, "0")
-            KSR.info("Initialized service stat: " + key + "\n")
-    # Return an instance of the kamailio class
+        if KSR.htable.sht_is_null(CONFIG["H_TABLE_NAME"], key) == -1:
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], key, "0")
+            KSR.info(f"Initialized service stat: {key}\n")
     return kamailio()
 
 class kamailio:
@@ -22,132 +31,160 @@ class kamailio:
         KSR.info('===== kamailio.__init__\n')
 
     def child_init(self, rank):
-        KSR.info('===== kamailio.child_init(%d)\n' % rank)
+        KSR.info(f'===== kamailio.child_init({rank})\n')
         return 0
 
     # --- Helper Functions using htable ---
-
     def is_acme_user(self, uri):
-        """Checks if the URI belongs to the acme.operator domain."""
-        if not uri: return False
-        return "acme.operator" in uri  
+        """Checks if the URI belongs to the configured service domain."""
+        if not uri:
+            KSR.err("[HELPER] is_acme_user called with a null URI.\n")
+            return False
+        return CONFIG["SERVICE_DOMAIN"] in uri  
+
+    def get_user_id(self, uri):
+        """Extracts a unique user ID (user@domain) from a SIP URI."""
+        if not uri:
+            KSR.err("[HELPER] get_user_id called with a null URI.\n")
+            return None
+        if not uri.startswith("sip:"):
+            uri = "sip:" + uri
+        # Remove 'sip:' prefix to get user@domain
+        return uri[4:]
 
     def extract_username(self, uri):
         """Extracts the username from a SIP URI."""
-        if not uri: return None
-        # If the URI doesn't start with 'sip:', add it for the regex to work correctly
+        if not uri:
+            KSR.err("[HELPER] extract_username called with a null URI.\n")
+            return None
         if not uri.startswith("sip:"):
             uri = "sip:" + uri
         match = re.match(r'sip:([^@]+)@', uri)
-        if match: return match.group(1)
+        if match:
+            return match.group(1)
+        KSR.warn(f"[HELPER] Could not extract username from URI: {uri}\n")
         return None
+    
+    def extract_full_uri(self, uri_or_username):
+        """Extracts the full URI from a username or URI."""
+        if not uri_or_username:
+            return None
+        if "@" in uri_or_username:
+            return uri_or_username if uri_or_username.startswith("sip:") else f"sip:{uri_or_username}"
+        # Default to service domain if only a username is provided
+        return f"sip:{uri_or_username}@{CONFIG['SERVICE_DOMAIN']}"
 
-    def is_user_registered(self, username):
-        """
-        Checks if a user is registered using an htable flag.
-        This is more reliable than trying to access the usrloc DB directly from Python.
-        """
-        if not username: return False
-        key = "registered_" + username
-        return KSR.htable.sht_get("redial", key) == "1"
+    def is_user_registered(self, user_id):
+        """Checks if a user is registered using an htable flag."""
+        if not user_id: 
+            KSR.err("[HELPER] is_user_registered called with null user_id\n")
+            return False
+        key = "registered_" + user_id
+        is_registered = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], key) == "1"
+        KSR.dbg(f"[HELPER] Checking registration for {user_id}: {'Found' if is_registered else 'Not found'}\n")
+        return is_registered
 
-    def get_user_redial_list(self, username):
+    def get_user_redial_list(self, user_id):
         """Gets user's redial list from htable."""
-        key = "redial_list_" + username
-        value = KSR.htable.sht_get("redial", key)
+        key = "redial_list_" + user_id
+        value = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], key)
         if value:
-            return value.split(',')
+            destinations = value.split(',')
+            KSR.dbg(f"[HELPER] Retrieved redial list for {user_id}: {destinations}\n")
+            return destinations
+        KSR.dbg(f"[HELPER] No redial list found for {user_id} or list is empty.\n")
         return []
 
-    def set_user_redial_list(self, username, destinations):
+    def set_user_redial_list(self, user_id, destinations):
         """Sets user's redial list in htable and updates max size stat."""
-        key = "redial_list_" + username
+        key = "redial_list_" + user_id
         value = ','.join(destinations)
-        KSR.htable.sht_sets("redial", key, value)
+        KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], key, value)
+        KSR.info(f"[HELPER] Set redial list for {user_id} to: {destinations}\n")
         
-        # Update max_redial_list_size if needed
         list_size = len(destinations)
-        current_max = int(KSR.htable.sht_get("redial", "max_redial_list_size") or "0")
+        current_max = int(KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], "max_redial_list_size") or "0")
         if list_size > current_max:
-            KSR.htable.sht_sets("redial", "max_redial_list_size", str(list_size))
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], "max_redial_list_size", str(list_size))
+            KSR.info(f"[HELPER] Updated max redial list size to: {list_size}\n")
 
-    def get_user_service_status(self, username):
+    def get_user_service_status(self, user_id):
         """Gets user's service status from htable."""
-        key = "service_status_" + username
-        status = KSR.htable.sht_get("redial", key)
-        # More robust comparison to handle both "1"/"0" and "true"/"false"
-        return status == "1" or (status and status.lower() == "true")
+        key = "service_status_" + user_id
+        status = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], key)
+        is_active = status == "1" or (status and status.lower() == "true")
+        KSR.dbg(f"[HELPER] Service status for {user_id} is: {'Active' if is_active else 'Inactive'}\n")
+        return is_active
 
-    def set_user_service_status(self, username, status):
+    def set_user_service_status(self, user_id, status):
         """Sets user's service status in htable and updates active users count."""
-        key = "service_status_" + username
-        was_active = self.get_user_service_status(username)
-        # Use "1"/"0" for consistency with initialization
-        KSR.htable.sht_sets("redial", key, "1" if status else "0")
+        key = "service_status_" + user_id
+        was_active = self.get_user_service_status(user_id)
+        KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], key, "1" if status else "0")
+        KSR.info(f"[HELPER] Set service status for {user_id} to: {'Active' if status else 'Inactive'}\n")
         
-        # Update currently_active_users count
-        current_count = int(KSR.htable.sht_get("redial", "currently_active_users") or "0")
+        current_count = int(KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], "currently_active_users") or "0")
         if status and not was_active:
-            KSR.htable.sht_sets("redial", "currently_active_users", str(current_count + 1))
+            new_count = current_count + 1
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], "currently_active_users", str(new_count))
+            KSR.info(f"[HELPER] Incremented active user count to: {new_count}\n")
         elif not status and was_active:
-            KSR.htable.sht_sets("redial", "currently_active_users", str(max(0, current_count - 1)))
+            new_count = max(0, current_count - 1)
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], "currently_active_users", str(new_count))
+            KSR.info(f"[HELPER] Decremented active user count to: {new_count}\n")
 
     # --- Main SIP Request Routing ---
-
     def ksr_request_route(self, msg):
-        # Handle REGISTER requests
-        if (msg.Method == "REGISTER"):
-            from_uri = KSR.pv.get("$fu")
-            if not self.is_acme_user(from_uri):
-                KSR.sl.send_reply(403, "Forbidden - Not an ACME user")
+        method = msg.Method
+        from_uri = KSR.pv.get("$fu")
+        to_uri = KSR.pv.get("$tu")
+        call_id = KSR.pv.get("$ci")
+        
+        KSR.info(f"[ROUTE] Received {method} from {from_uri} to {to_uri} (Call-ID: {call_id})\n")
+
+        if method == "REGISTER":
+            from_user_id = self.get_user_id(from_uri)
+            if not from_user_id:
+                KSR.sl.send_reply(400, "Bad Request - Invalid From URI")
                 return 1
+
+            KSR.info(f"[ROUTE] User {from_user_id} attempting to register.\n")
             
-            username = self.extract_username(from_uri)
-            if username:
-                KSR.info("User " + username + " attempting to register.\n")
-                
-                # Initialize user data in htable if not already done
-                if KSR.htable.sht_is_null("redial", "redial_list_" + username) == -1:
-                    self.set_user_redial_list(username, [])
-                    self.set_user_service_status(username, False)
-                    KSR.info("Initialized redial service data for user " + username + "\n")
-            
-            # Save registration to Kamailio's location DB
             res = KSR.registrar.save("location", 0)
             
             if res < 0:
-                KSR.err("Registration for " + from_uri + " failed with code " + str(res) + ".\n")
+                KSR.err(f"[ROUTE] Registration for {from_uri} failed with code {res}.\n")
                 return 1
 
-            KSR.info("Registration for " + from_uri + " successful.\n")
-            # Set a flag in htable to indicate the user is registered
-            KSR.htable.sht_sets("redial", "registered_" + username, "1")
+            KSR.info(f"[ROUTE] Registration for {from_uri} successful.\n")
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], "registered_" + from_user_id, "1")
+            
+            if self.is_acme_user(from_uri):
+                if KSR.htable.sht_is_null(CONFIG["H_TABLE_NAME"], "redial_list_" + from_user_id) == -1:
+                    KSR.info(f"[ROUTE] Initializing service data for new ACME user {from_user_id}\n")
+                    self.set_user_redial_list(from_user_id, [])
+                    self.set_user_service_status(from_user_id, False)
+
             KSR.sl.send_reply(200, "OK")
             return 1
 
-        # Handle MESSAGE requests for service management (ACTIVATE/DEACTIVATE)
-        if msg.Method == "MESSAGE":  
-            from_uri = KSR.pv.get("$fu")
-            to_uri = KSR.pv.get("$tu")
-            
-            # Only allow service management messages sent by ACME users
-            if not self.is_acme_user(from_uri):
-                KSR.sl.send_reply(403, "Forbidden - Not an ACME user")
-                return 1
+        if method == "MESSAGE":  
+            if CONFIG["SERVICE_MANAGEMENT_URI"] in to_uri:
+                if not self.is_acme_user(from_uri):
+                    KSR.warn(f"[ROUTE] Forbidden service management attempt from non-ACME user: {from_uri}\n")
+                    KSR.sl.send_reply(403, "Forbidden - Service management for ACME users only")
+                    return 1
                 
-            # Check if the message is for the redial service
-            if "redial@acme.operator" in to_uri:
                 content = KSR.pv.get("$rb")
-                username = self.extract_username(from_uri)
+                from_user_id = self.get_user_id(from_uri)
                 
-                if not username:
+                if not from_user_id:
                     KSR.sl.send_reply(400, "Bad Request - Invalid user")
                     return 1
                 
-                # Process ACTIVATE command
                 if content.startswith("ACTIVATE"):
-                    if not self.is_user_registered(username):
-                        KSR.info("ACTIVATE failed: User " + username + " is not registered.\n")
+                    if not self.is_user_registered(from_user_id):
+                        KSR.info(f"[ROUTE] ACTIVATE failed: User {from_user_id} is not registered.\n")
                         KSR.sl.send_reply(403, "Forbidden - User not registered")
                         return 1
 
@@ -157,160 +194,201 @@ class kamailio:
                         return 1
                     
                     destinations = parts[1:]
-                    self.set_user_redial_list(username, destinations)
+                    valid_destinations = []
+                    for dest in destinations:
+                        if re.match(r'^[a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+$', dest):
+                            valid_destinations.append(dest)
+                        else:
+                            KSR.warn(f"[ROUTE] ACTIVATE for {from_user_id}: Skipping invalid AoR format: {dest}\n")
+
+                    if not valid_destinations:
+                        KSR.sl.send_reply(400, "Bad Request - No valid destinations provided")
+                        return 1
+
+                    self.set_user_redial_list(from_user_id, valid_destinations)
                     
-                    if not self.get_user_service_status(username):
-                        current_total = int(KSR.htable.sht_get("redial", "total_activations") or "0")
-                        KSR.htable.sht_sets("redial", "total_activations", str(current_total + 1))
+                    if not self.get_user_service_status(from_user_id):
+                        current_total = int(KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], "total_activations") or "0")
+                        KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], "total_activations", str(current_total + 1))
                     
-                    self.set_user_service_status(username, True)
+                    self.set_user_service_status(from_user_id, True)
                     
-                    KSR.info("Redial service activated for user " + username + " with destinations: " + str(destinations) + "\n")
+                    KSR.info(f"[ROUTE] Redial service activated for user {from_user_id} with destinations: {valid_destinations}\n")
                     KSR.sl.send_reply(200, "OK - Redial service activated")
                     return 1
                 
-                # Process DEACTIVATE command
                 elif content.strip() == "DEACTIVATE":
-                    if not self.is_user_registered(username):
-                        KSR.info("DEACTIVATE failed: User " + username + " is not registered.\n")
+                    if not self.is_user_registered(from_user_id):
+                        KSR.info(f"[ROUTE] DEACTIVATE failed: User {from_user_id} is not registered.\n")
                         KSR.sl.send_reply(403, "Forbidden - User not registered")
                         return 1
 
-                    self.set_user_redial_list(username, [])
-                    self.set_user_service_status(username, False)
+                    self.set_user_redial_list(from_user_id, [])
+                    self.set_user_service_status(from_user_id, False)
                     
-                    KSR.info("Redial service deactivated for user " + username + "\n")
+                    KSR.info(f"[ROUTE] Redial service deactivated for user {from_user_id}\n")
                     KSR.sl.send_reply(200, "OK - Redial service deactivated")
                     return 1
                 
-                # Unknown command
                 else:
                     KSR.sl.send_reply(400, "Bad Request - Unknown command")
                     return 1
             
-            # If not a service management message, forward normally
+            KSR.info(f"[ROUTE] Forwarding MESSAGE from {from_uri} to {to_uri}\n")
             KSR.tm.t_relay()
             return 1
 
-        # Handle OPTIONS requests (commonly used for keep-alive and capability discovery)
-        if (msg.Method == "OPTIONS"):
+        if method == "PUBLISH":
             KSR.sl.send_reply(200, "OK")
             return 1
 
-        # Handle INVITE requests (calls)
-        if (msg.Method == "INVITE"):                      
-            from_uri = KSR.pv.get("$fu")
-            from_username = self.extract_username(from_uri)
-            
-            # Check if the caller has the redial service active
-            if from_username and self.get_user_service_status(from_username):
-                KSR.info("Caller " + from_username + " has redial service active.\n")
-                redial_list = self.get_user_redial_list(from_username)
-                
-                # Find the first available destination in the redial list
-                for dest in redial_list:
-                    if self.is_user_registered(dest):
-                        KSR.info("Redial: Found registered user " + dest + ". Setting as primary destination.\n")
-                        KSR.pv.sets("$ru", "sip:" + dest + "@acme.operator")
-                        break # Stop after finding the first available
+        if method == "OPTIONS":
+            KSR.sl.send_reply(200, "OK")
+            return 1
 
-            # Set the failure route to handle sequential forking if the first attempt fails
+        if method == "INVITE":                      
+            from_user_id = self.get_user_id(from_uri)
+            original_uri = KSR.pv.get("$ru")
+            call_key = f"call_{call_id}"
+            
+            # ROBUST CHECK: See if we have already stored data for this call.
+            # This is more reliable than checking for a specific flag.
+            caller_stored = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], f"caller_{call_key}")
+            if not caller_stored:
+                # This is a new call, initialize all necessary data.
+                KSR.info(f"[ROUTE] Initializing call data for new call {call_key}.\n")
+                KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"redial_attempt_{call_key}", "0")
+                KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"caller_{call_key}", from_user_id)
+                KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"orig_uri_{call_key}", original_uri)
+                KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"tried_dests_{call_key}", "")
+            else:
+                # This is a re-entry (e.g., from a failure route), data is already present.
+                KSR.info(f"[ROUTE] Call data for {call_key} already exists. Continuing.\n")
+
             KSR.tm.t_on_failure("ksr_failure_manage_route")
             
-            # Try to find the callee in the location database and relay the call
-            if (KSR.registrar.lookup("location") == 1):   
-                KSR.info("User found, relaying call to " + KSR.pv.get("$ru") + "\n")
+            if KSR.registrar.lookup("location") == 1:   
+                KSR.info(f"[ROUTE] Original destination found, relaying call to {KSR.pv.get('$du') or KSR.pv.get('$ru')}\n")
                 KSR.rr.record_route()
                 KSR.tm.t_relay()   
                 return 1
             else:
-                # This case handles when the original or rewritten R-URI is not found
-                KSR.info("User " + KSR.pv.get("$ru") + " not found.\n")
+                KSR.info(f"[ROUTE] Original user {original_uri} not found in location DB. Sending 404.\n")
                 KSR.sl.send_reply(404, "Not Found")
                 return 1
 
-        # Handle other SIP methods
-        if (msg.Method == "ACK"):
-            KSR.rr.loose_route()  
-            KSR.registrar.lookup("location")
-            KSR.tm.t_relay()
-            return 1
-
-        if (msg.Method == "BYE"):
-            KSR.rr.loose_route()    
-            KSR.registrar.lookup("location")
-            KSR.tm.t_relay()
-            return 1
-
-        if (msg.Method == "CANCEL"):
-            KSR.rr.loose_route()    
-            KSR.registrar.lookup("location")
-            KSR.tm.t_relay()
-            return 1
-
-        KSR.sl.send_reply(403, "Forbidden method")
-        return 1
-
-    # --- Failure Route for Redial Logic ---
-    # This route is triggered by TM module for any negative reply
-    def ksr_failure_manage_route(self, msg):
-        # Use t_check_status to check for specific status codes
-        if KSR.tm.t_check_status("486") or KSR.tm.t_check_status("480"):
-            KSR.info("===== failure_manage_route: Received a busy/unavailable response\n")
-            
-            # FIX: Get the username of the CALLEE (the person being called)
-            # The original failed destination is in the Request-URI ($ru)
-            callee_username = self.extract_username(KSR.pv.get("$ru"))
-            KSR.info(f"[REDIAL] Call to callee '{callee_username}' failed. Checking their redial list.\n")
-            
-            # Ensure the CALLEE has the redial service active
-            if not callee_username or not self.get_user_service_status(callee_username):
-                KSR.info(f"[REDIAL] Callee {callee_username} does not have redial service active. Exiting.\n")
-                return 1
-                
-            # Get the CALLEE's redial list
-            redial_list = self.get_user_redial_list(callee_username)
-            KSR.info(f"[REDIAL] Found redial list for {callee_username}: {redial_list}\n")
-            if not redial_list:
-                KSR.info(f"[REDIAL] Callee {callee_username} has an empty redial list. Exiting.\n")
-                return 1
-
-            # Iterate through the redial list to find the next available destination
-            for dest in redial_list:
-                # We need to check if the destination in the list is just a username or a full URI
-                dest_username = self.extract_username(dest) # This will now work correctly
-                
-                if not dest_username:
-                    KSR.info(f"[REDIAL] Could not extract username from destination '{dest}'. Skipping.\n")
-                    continue
-
-                KSR.info(f"[REDIAL] Checking if destination '{dest_username}' is registered...\n")
-                if self.is_user_registered(dest_username):
-                    KSR.info(f"[REDIAL] Trying next destination {dest_username} for callee {callee_username}.\n")
-                    # Set the new Request-URI
-                    KSR.pv.sets("$ru", "sip:" + dest_username + "@acme.operator")
-                    # Relay the call to the new destination. This creates a new branch for the same transaction.
-                    KSR.tm.t_relay()
-                    return 1 # Stop processing this failure route
+        if method in ["ACK", "BYE", "CANCEL"]:
+            if method == "CANCEL":
+                if KSR.tm.t_check_trans():
+                    KSR.tm.t_reply(487, "Request Terminated")
+                    return 1
                 else:
-                    KSR.info(f"[REDIAL] Destination '{dest_username}' is not registered. Skipping.\n")
-
-
-            # If we get here, no more destinations were available in the list
-            KSR.info(f"Redial: No more destinations available for callee {callee_username}.\n")
+                    KSR.info(f"[ROUTE] No matching transaction for CANCEL\n")
+                    return 1
+            
+            KSR.rr.loose_route()    
+            KSR.tm.t_relay()
             return 1
-        
-        # For other status codes, we don't do anything special
+
+        KSR.sl.send_reply(405, "Method Not Allowed")
         return 1
-    
+
+    def ksr_failure_manage_route(self, msg):
+        call_id = KSR.pv.get("$ci")
+        call_key = f"call_{call_id}"
+        
+        status_code_raw = KSR.pv.get("$rs")
+        status_code = str(status_code_raw) if status_code_raw is not None else ""
+        
+        redial_attempt = int(KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], f"redial_attempt_{call_key}") or "0")
+        caller_user_id = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], f"caller_{call_key}")
+        original_uri = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], f"orig_uri_{call_key}")
+        
+        tried_dests_str = KSR.htable.sht_get(CONFIG["H_TABLE_NAME"], f"tried_dests_{call_key}") or ""
+        tried_dests = tried_dests_str.split(',') if tried_dests_str else []
+        
+        KSR.info(f"[FAILURE] Entered failure route. Attempt {redial_attempt}. Caller: {caller_user_id}. Status: {status_code}\n")
+
+        if redial_attempt >= CONFIG["MAX_REDIAL_ATTEMPTS"]:
+            KSR.info(f"[FAILURE] Max redial attempts ({CONFIG['MAX_REDIAL_ATTEMPTS']}) reached. Terminating call.\n")
+            self.cleanup_call_data(call_key)
+            KSR.tm.t_reply(486, "Busy Here")
+            return 1
+
+        # This check should now always pass due to the robust logic in ksr_request_route
+        if not caller_user_id or not self.get_user_service_status(caller_user_id):
+            KSR.info(f"[FAILURE] Caller {caller_user_id or 'Unknown'} does not have redial service active. Terminating call.\n")
+            self.cleanup_call_data(call_key)
+            KSR.tm.t_reply(404, "Not Found")
+            return 1
+            
+        redial_list = self.get_user_redial_list(caller_user_id)
+        if not redial_list:
+            KSR.info(f"[FAILURE] Caller {caller_user_id} has an empty redial list. Terminating call.\n")
+            self.cleanup_call_data(call_key)
+            KSR.tm.t_reply(404, "Not Found")
+            return 1
+
+        next_dest = None
+        for dest in redial_list:
+            if self.get_user_id(dest) == caller_user_id:
+                KSR.info(f"[FAILURE] Skipping redial to original caller {dest} to prevent loop.\n")
+                continue
+            if dest == original_uri or self.extract_full_uri(dest) == original_uri:
+                KSR.info(f"[FAILURE] Skipping redial to original destination {dest} (already tried).\n")
+                continue
+            if dest in tried_dests:
+                KSR.info(f"[FAILURE] Skipping redial to {dest} (already tried).\n")
+                continue
+            next_dest = dest
+            break
+        
+        if next_dest:
+            tried_dests.append(next_dest)
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"tried_dests_{call_key}", ','.join(tried_dests))
+            
+            if self.is_acme_user(next_dest):
+                dest_user_id = self.get_user_id(next_dest)
+                if not self.is_user_registered(dest_user_id):
+                    KSR.warn(f"[FAILURE] Internal redial destination '{next_dest}' is not registered. Skipping it.\n")
+                    KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"redial_attempt_{call_key}", str(redial_attempt + 1))
+                    KSR.tm.t_reply(404, "Redial Destination Not Found")
+                    return 1
+            
+            KSR.info(f"[FAILURE] Trying redial destination {next_dest} for caller {caller_user_id} (Attempt {redial_attempt + 1}).\n")
+            KSR.pv.sets("$ru", self.extract_full_uri(next_dest))
+            KSR.htable.sht_sets(CONFIG["H_TABLE_NAME"], f"redial_attempt_{call_key}", str(redial_attempt + 1))
+            KSR.tm.t_relay()
+            return 1
+        else:
+            KSR.info(f"[FAILURE] All valid redial destinations have been attempted for caller {caller_user_id}. Terminating call.\n")
+            self.cleanup_call_data(call_key)
+            KSR.tm.t_reply(486, "Busy Here")
+            return 1
+
+    def cleanup_call_data(self, call_key):
+        """Helper function to clean up htable entries for a completed call."""
+        # CORRECTED FUNCTION NAME: sht_rm instead of sht_remove
+        KSR.htable.sht_rm(CONFIG["H_TABLE_NAME"], f"redial_attempt_{call_key}")
+        KSR.htable.sht_rm(CONFIG["H_TABLE_NAME"], f"caller_{call_key}")
+        KSR.htable.sht_rm(CONFIG["H_TABLE_NAME"], f"orig_uri_{call_key}")
+        KSR.htable.sht_rm(CONFIG["H_TABLE_NAME"], f"tried_dests_{call_key}")
+
     def ksr_reply_route(self, msg):
-        # This route is for processing replies, but the main logic is in the failure route
-        # We can keep it for logging or other reply-based actions.
-        KSR.info("===== reply_route - from kamailio python script: ")
-        KSR.info("  Status is:" + str(KSR.pv.get("$rs")) + "\n")
+        status_code_raw = KSR.pv.get("$rs")
+        status_code = str(status_code_raw) if status_code_raw is not None else ""
+        
+        call_id = KSR.pv.get("$ci")
+        call_key = f"call_{call_id}"
+        
+        KSR.dbg(f"[REPLY] Reply received - Status: {status_code}\n")
+        
+        if status_code.startswith("2"):
+            self.cleanup_call_data(call_key)
+            KSR.info(f"[REPLY] Call succeeded, cleaned up redial attempt counter for {call_key}\n")
+            
         return 1
 
     def ksr_onsend_route(self, msg):
-        KSR.info("===== onsend route - from kamailio python script:")
-        KSR.info("   " + str(msg.Type) + "\n")
+        KSR.dbg(f"[ONSEND] Onsend route triggered for message type: {KSR.pv.get('$rm')}\n")
         return 1
